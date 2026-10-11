@@ -19,6 +19,7 @@ import {
 import { UserProfile, Language, ChatMessage, BusinessIdea } from '../types';
 import { translations } from '../i18n/translations';
 import { dataService } from '../services/dataService';
+import { SAMPLE_BUSINESSES } from '../data/sampleBusinesses';
 
 interface AIAdvisorChatProps {
   profile: UserProfile;
@@ -47,7 +48,7 @@ export const AIAdvisorChat: React.FC<AIAdvisorChatProps> = ({
         role: 'assistant',
         text: `नमस्ते ${profile.name || 'मित्र'}! मैं व्यापार साथी (VyapaarSathi) का एआई सलाहकार हूँ।\n\nआपके गांव ${profile.location.village || 'के क्षेत्र'} में उपलब्ध पूंजी ₹${profile.availableCapital.toLocaleString('en-IN')} के साथ आप कौन सा व्यवसाय शुरू करना चाहते हैं? आप मुझसे मशीनरी की लागत, सरकारी सब्सिडी (PMEGP/Mudra), या किसी भी ग्रामीण व्यवसाय के बारे में सीधा सवाल पूछ सकते हैं।`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        source: 'gemini-3.8-flash',
+        source: 'gemini-flash',
       };
     } else if (lang === 'mr') {
       return {
@@ -55,7 +56,7 @@ export const AIAdvisorChat: React.FC<AIAdvisorChatProps> = ({
         role: 'assistant',
         text: `नमस्कार ${profile.name || 'मित्र'}! मी व्यापार साथी (VyapaarSathi) चा एआय सल्लागार आहे.\n\nआपल्या परिसरातील परिस्थिती आणि ₹${profile.availableCapital.toLocaleString('en-IN')} च्या भांडवलामध्ये तुम्हाला कोणता व्यवसाय सुरू करायचा आहे? तुम्ही मला मशिनरीचा खर्च, सरकारी सबसिडी (PMEGP/Mudra) किंवा व्यवसाय नियोजनाबद्दल काहीही विचारू शकता.`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        source: 'gemini-3.8-flash',
+        source: 'gemini-flash',
       };
     } else {
       return {
@@ -63,7 +64,7 @@ export const AIAdvisorChat: React.FC<AIAdvisorChatProps> = ({
         role: 'assistant',
         text: `Hello ${profile.name || 'Friend'}! I am VyapaarSathi AI Advisor.\n\nBased on your location in ${profile.location.village || 'your village'}, ${profile.location.district || ''} and available savings of ₹${profile.availableCapital.toLocaleString('en-IN')}, what kind of business would you like to explore? Ask me anything about machinery costs, raw materials, or government subsidy schemes (PMEGP, Mudra, PM-FME).`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        source: 'gemini-3.8-flash',
+        source: 'gemini-flash',
       };
     }
   };
@@ -162,7 +163,12 @@ export const AIAdvisorChat: React.FC<AIAdvisorChatProps> = ({
 
   // Toggle voice listening
   const handleToggleListening = () => {
-    if (!speechSupported || !recognitionRef.current) return;
+    if (!speechSupported || !recognitionRef.current) {
+      setErrorBanner({
+        message: 'Speech recognition is not supported in this browser. Please use text input.',
+      });
+      return;
+    }
     if (isListening) {
       recognitionRef.current.stop();
       setIsListening(false);
@@ -175,11 +181,14 @@ export const AIAdvisorChat: React.FC<AIAdvisorChatProps> = ({
       } catch (err) {
         console.warn('Speech recognition start failed', err);
         setIsListening(false);
+        setErrorBanner({
+          message: 'Could not access microphone. Please check permissions or type your question.',
+        });
       }
     }
   };
 
-  // Text to speech audio output
+  // Text to speech audio output with markdown stripped for clean pronunciation
   const handleSpeakText = (text: string, msgId: string) => {
     if (!('speechSynthesis' in window)) return;
 
@@ -190,7 +199,12 @@ export const AIAdvisorChat: React.FC<AIAdvisorChatProps> = ({
     }
 
     window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
+    const cleanSpeech = text
+      .replace(/[*#_~`]/g, '')
+      .replace(/--+/g, ' ')
+      .trim();
+
+    const utterance = new SpeechSynthesisUtterance(cleanSpeech);
     utterance.lang = language === 'hi' ? 'hi-IN' : language === 'mr' ? 'mr-IN' : 'en-IN';
     utterance.rate = 0.95;
 
@@ -232,11 +246,18 @@ export const AIAdvisorChat: React.FC<AIAdvisorChatProps> = ({
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
 
-    // Filter out prior error messages from active conversation history
-    const priorHistory = messages.filter((m) => !m.isError);
+    // When sending a message (or retrying), clean up trailing unanswered messages or errors
+    const cleanHistory = [...messages];
+    while (
+      cleanHistory.length > 0 &&
+      (cleanHistory[cleanHistory.length - 1].isError ||
+        cleanHistory[cleanHistory.length - 1].role === 'user')
+    ) {
+      cleanHistory.pop();
+    }
 
     // Update state immediately with user message
-    const updatedMessages = [...priorHistory, userMsg];
+    const updatedMessages = [...cleanHistory, userMsg];
     setMessages(updatedMessages);
     setInputText('');
     setLoading(true);
@@ -245,39 +266,77 @@ export const AIAdvisorChat: React.FC<AIAdvisorChatProps> = ({
     dataService.saveChatMessages(updatedMessages);
 
     try {
-      // Send previous messages (excluding the newly submitted userMsg) as conversationHistory
-      const historyPayload = priorHistory.slice(-8).map((m) => ({
-        role: m.role,
-        text: m.text,
-      }));
+      // Send previous valid conversation history to server (excluding errors)
+      const historyPayload = cleanHistory
+        .filter((m) => !m.isError && m.text && m.text.trim())
+        .slice(-8)
+        .map((m) => ({
+          role: m.role === 'user' ? 'user' : 'assistant',
+          text: m.text,
+        }));
 
-      const response = await fetch('/api/advisor-chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: text,
-          conversationHistory: historyPayload,
-          profile,
-          selectedBusiness,
-          language,
-        }),
-      });
+      const endpoint = '/api/advisor-chat';
+      let response: Response;
 
-      const data = await response.json();
+      try {
+        response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+          body: JSON.stringify({
+            message: text,
+            conversationHistory: historyPayload,
+            profile,
+            selectedBusiness,
+            language,
+          }),
+        });
+      } catch {
+        // Fallback with absolute origin if relative path encountered an iframe fetch issue
+        response = await fetch(window.location.origin + endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+          body: JSON.stringify({
+            message: text,
+            conversationHistory: historyPayload,
+            profile,
+            selectedBusiness,
+            language,
+          }),
+        });
+      }
 
-      if (response.ok && data.success && data.reply) {
+      let data: any = null;
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        data = await response.json();
+      } else {
+        const textResp = await response.text();
+        console.warn('Received non-JSON response from server:', response.status, textResp.slice(0, 150));
+        data = {
+          success: false,
+          errorMessage: `Server returned HTTP ${response.status}. Please click Retry.`,
+        };
+      }
+
+      if (response.ok && data?.success && data?.reply) {
         const aiMsg: ChatMessage = {
           id: `bot_${Date.now()}`,
           role: 'assistant',
           text: data.reply,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          source: data.source || 'gemini-3.8-flash',
+          source: data.source || 'gemini-3.1-flash-lite',
         };
 
         const finalMessages = [...updatedMessages, aiMsg];
         setMessages(finalMessages);
         dataService.saveChatMessages(finalMessages);
-      } else if (data.isDemoMode && data.reply) {
+      } else if (data?.isDemoMode && data?.reply) {
         // Explicitly labeled Demo Mode
         const demoMsg: ChatMessage = {
           id: `bot_${Date.now()}`,
@@ -291,7 +350,7 @@ export const AIAdvisorChat: React.FC<AIAdvisorChatProps> = ({
         dataService.saveChatMessages(finalMessages);
       } else {
         // Server returned an error (rate limit, service unavailable, or API error)
-        const errorMessage = data.errorMessage || 'Unable to generate response from Gemini API.';
+        const errorMessage = data?.errorMessage || 'Unable to generate response from Gemini AI. Please retry.';
         const errorMsg: ChatMessage = {
           id: `err_${Date.now()}`,
           role: 'assistant',
@@ -365,32 +424,45 @@ export const AIAdvisorChat: React.FC<AIAdvisorChatProps> = ({
           </button>
         </div>
 
-        {/* Selected Business Context Badge (if user has active business) */}
-        {selectedBusiness && (
-          <div className="p-3 bg-emerald-50/80 rounded-2xl border border-emerald-200 flex items-center justify-between gap-2 text-xs text-emerald-950">
-            <div className="flex items-center gap-2">
-              <Briefcase className="w-4 h-4 text-emerald-700 shrink-0" />
-              <span>
-                <strong>Active Context:</strong> {selectedBusiness.title} (Est. Cost: ₹
-                {selectedBusiness.estimatedCost.toLocaleString('en-IN')})
-              </span>
-            </div>
-            {onSelectBusiness && (
-              <button
-                onClick={() => onSelectBusiness(null)}
-                className="text-[11px] text-emerald-800 hover:underline font-bold shrink-0"
-              >
-                Clear Context
-              </button>
-            )}
+        {/* Business Context Selector & Badge */}
+        <div className="p-3 bg-emerald-50/80 rounded-2xl border border-emerald-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs text-emerald-950">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Briefcase className="w-4 h-4 text-emerald-700 shrink-0" />
+            <span className="font-semibold text-emerald-900">
+              {selectedBusiness ? 'Active Business Context:' : 'Discuss a Specific Business:'}
+            </span>
+            <select
+              value={selectedBusiness?.id || ''}
+              onChange={(e) => {
+                const found = SAMPLE_BUSINESSES.find((b) => b.id === e.target.value) || null;
+                onSelectBusiness?.(found);
+              }}
+              className="bg-white px-2.5 py-1.5 rounded-xl border border-emerald-300 text-stone-800 text-xs font-medium focus:outline-none focus:ring-1 focus:ring-emerald-600"
+            >
+              <option value="">General Rural Advisory (All Businesses)</option>
+              {SAMPLE_BUSINESSES.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.title} (₹{b.estimatedCost.toLocaleString('en-IN')})
+                </option>
+              ))}
+            </select>
           </div>
-        )}
+
+          {selectedBusiness && onSelectBusiness && (
+            <button
+              onClick={() => onSelectBusiness(null)}
+              className="text-[11px] text-emerald-800 hover:text-emerald-950 underline font-bold shrink-0 cursor-pointer"
+            >
+              Reset to General Advisory
+            </button>
+          )}
+        </div>
 
         {/* Prototype Transparency Notice */}
         <div className="text-[11px] text-stone-500 bg-stone-50 p-2.5 rounded-xl border border-stone-200 flex items-center gap-2">
           <Sparkles className="w-4 h-4 text-emerald-700 shrink-0" />
           <span>
-            Powered by Google Gemini 3.8 Flash • Generates real-time, context-aware answers tailored to your capital and rural location.
+            Powered by Google Gemini Flash • Generates real-time, context-aware answers tailored to your capital and rural location.
           </span>
         </div>
       </div>
@@ -564,12 +636,12 @@ export const AIAdvisorChat: React.FC<AIAdvisorChatProps> = ({
 
                         <span>•</span>
                         {isDemo ? (
-                          <span className="text-amber-700 font-semibold bg-amber-50 px-1.5 py-0.2 rounded border border-amber-200">
-                            Demo Mode
+                          <span className="text-amber-700 font-semibold bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
+                            Demo Mode (Sample Guidance)
                           </span>
                         ) : (
-                          <span className="text-emerald-700 font-semibold">
-                            Gemini 3.8 Flash
+                          <span className="text-emerald-700 font-semibold bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+                            {msg.source ? `Gemini (${msg.source})` : 'Gemini AI'}
                           </span>
                         )}
                       </>

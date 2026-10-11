@@ -151,7 +151,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   text: string;
   timestamp: string;
-  source?: 'gemini-3.8-flash' | 'demo_mode' | 'error';
+  source?: string;
   isError?: boolean;
   errorMessage?: string;
   canRetry?: boolean;

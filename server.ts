@@ -14,6 +14,18 @@ const port = parseInt(process.env.PORT || '3000', 10);
 
 app.use(express.json());
 
+// Enable CORS for preview iframe and API access
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  res.header('Access-Control-Allow-Origin', origin || '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+  next();
+});
+
 // Helper to properly format multi-turn contents for Gemini API
 function buildGeminiContents(
   conversationHistory: any[],
@@ -91,7 +103,14 @@ app.post('/api/advisor-chat', async (req: Request, res: Response) => {
       });
     }
 
-    const ai = new GoogleGenAI({ apiKey });
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
+      },
+    });
 
     // Build context about the selected business if provided
     let businessContext = '';
@@ -144,10 +163,16 @@ Advisory Principles:
 
     const contents = buildGeminiContents(conversationHistory, message);
 
-    const candidateModels = ['gemini-3.8-flash', 'gemini-3.1-flash-lite'];
+    // Prioritize high-performance, active quota flash models
+    const candidateModels = [
+      'gemini-3.1-flash-lite',
+      'gemini-3-flash-preview',
+      'gemini-flash-latest',
+      'gemini-3.8-flash',
+    ];
     let lastError: any = null;
     let responseText: string | null = null;
-    let successfulModel = 'gemini-3.8-flash';
+    let successfulModel = 'gemini-3.1-flash-lite';
 
     for (const model of candidateModels) {
       try {
@@ -160,8 +185,9 @@ Advisory Principles:
           },
         });
 
+        // 25 second timeout for rich multilingual generation
         const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error(`AI generation timed out on ${model}`)), 15000)
+          setTimeout(() => reject(new Error(`AI generation timed out on ${model}`)), 25000)
         );
 
         const response: any = await Promise.race([generatePromise, timeoutPromise]);
@@ -173,7 +199,6 @@ Advisory Principles:
       } catch (err: any) {
         lastError = err;
         console.warn(`Model ${model} failed:`, err?.status || err?.message || err);
-        // If 503 or timeout, continue to the next candidate model
       }
     }
 
