@@ -1,0 +1,6 @@
+{
+  "name": "VyapaarSathi - Rural Business & Loan Advisory",
+  "description": "A location-aware business and loan advisory platform for rural and semi-urban entrepreneurs in India, featuring hyper-local market analysis, multilingual AI advisor, startup cost calculator, and government loan schemes.",
+  "requestFramePermissions": ["geolocation", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
